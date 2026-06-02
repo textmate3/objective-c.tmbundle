@@ -137,7 +137,7 @@ return false
     fileNames = ["#{ENV['TM_BUNDLE_SUPPORT']}/CocoaMethods.txt.gz"]
     userMethods = "#{ENV['TM_PROJECT_DIRECTORY']}/.methods.TM_Completions.txt.gz"
 
-    fileNames += [userMethods] if File.exists? userMethods
+    fileNames += [userMethods] if File.exist? userMethods
     candidates = []
     fileNames.each do |fileName|
       zGrepped = %x{zgrep ^#{e_sh methodName }[[:space:]] #{e_sh fileName }}
