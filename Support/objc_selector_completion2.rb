@@ -70,7 +70,7 @@ class ObjcSelectorCompletion
   end
 
   def show_dialog(prettyCandidates,searchTerm,start)
-    require "#{ENV['TM_SUPPORT_PATH']}/lib/osx/plist"
+    require "#{ENV['TM_SUPPORT_PATH']}/private/plist"
     pl = prettyCandidates.map { |pretty , junk1, junk2| { 'display' => junk1} }
 
     flags = {}

@@ -2,7 +2,7 @@ SUPPORT = ENV['TM_SUPPORT_PATH']
 
 require SUPPORT + '/lib/exit_codes'
 require SUPPORT + '/lib/escape'
-require SUPPORT + '/lib/osx/plist'
+require SUPPORT + '/private/plist'
 require SUPPORT + '/lib/ui'
 
 def find_xcode_prefix
@@ -148,7 +148,7 @@ end
 
 def get_user_selected_reference (class_names)
 	plist = {'menuItems' => class_names}.to_plist
-	res = OSX::PropertyList::load(%x{"$DIALOG" -up #{e_sh plist} })
+	res = Plist.load(%x{"$DIALOG" -up #{e_sh plist} })
 	res['selectedMenuItem'] ? res['selectedMenuItem']['url'] : nil
 end
 
