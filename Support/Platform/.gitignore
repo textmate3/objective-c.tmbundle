@@ -1,0 +1,2 @@
+# The built generator, which the Makefile rebuilds from generator.mm.
+generator
