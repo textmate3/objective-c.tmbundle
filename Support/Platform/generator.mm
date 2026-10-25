@@ -115,14 +115,47 @@ std::string strings_to_regexp (_InputIter first, _InputIter last)
 	return res;
 }
 
-static BOOL update_grammar (NSString* grammarPath, std::map<std::string, std::set<std::string>> const& functions, std::map<std::string, std::set<std::string>> const& protocols, std::map<std::string, std::set<std::string>> const& other, NSString* comment)
+// One rule for a whole group of scopes: every scope's alternation becomes a capture group, and the captures name the scopes.
+// The grammar engine tries each rule against each line, so the cost of a grammar grows with its rule count, not its symbol count.
+// A thousand scopes as a thousand rules is a thousand scans per line, as one rule it is one scan.
+// `prefix` opens the match before the groups and `captures` receives any capture that prefix defines.
+static NSDictionary* merged_rule (std::map<std::string, std::set<std::string>> const& groups, NSString* prefix, NSMutableDictionary* captures)
+{
+	NSMutableString* match = [NSMutableString stringWithFormat:@"%@\\b(?:", prefix];
+	NSUInteger index = captures.count;
+	bool first = true;
+	for(auto const& pair : groups)
+	{
+		if(!std::exchange(first, false))
+			[match appendString:@"|"];
+		[match appendFormat:@"(%@)", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
+		captures[[NSString stringWithFormat:@"%lu", (unsigned long)++index]] = @{ @"name" : @(pair.first.c_str()) };
+	}
+	[match appendString:@")\\b"];
+	return @{ @"match" : match, @"captures" : captures };
+}
+
+static BOOL update_grammar (NSString* grammarPath, std::map<std::string, std::set<std::string>> const& functions, std::map<std::string, std::set<std::string>> const& protocols, std::map<std::string, std::set<std::string>> const& other, NSString* comment, BOOL mergeRules)
 {
 	NSMutableArray* patternRules  = [NSMutableArray new];
 	NSMutableArray* functionRules = [NSMutableArray new];
 	NSMutableArray* protocolRules = [NSMutableArray new];
 
+	if(mergeRules)
+	{
+		NSMutableDictionary* functionCaptures = [NSMutableDictionary dictionaryWithDictionary:@{ @"1" : @{ @"name" : @"punctuation.whitespace.support.function.leading" } }];
+		if(!functions.empty())
+			[functionRules addObject:merged_rule(functions, @"(\\s*)", functionCaptures)];
+		if(!protocols.empty())
+			[protocolRules addObject:merged_rule(protocols, @"", [NSMutableDictionary new])];
+		if(!other.empty())
+			[patternRules addObject:merged_rule(other, @"", [NSMutableDictionary new])];
+	}
+
 	for(auto const& pair : functions)
 	{
+		if(mergeRules)
+			break;
 		NSString* match = [NSString stringWithFormat:@"\\b%@\\b", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
 		[functionRules addObject:@{
 			@"match" : [NSString stringWithFormat:@"(\\s*)(%@)", match],
@@ -135,12 +168,16 @@ static BOOL update_grammar (NSString* grammarPath, std::map<std::string, std::se
 
 	for(auto const& pair : protocols)
 	{
+		if(mergeRules)
+			break;
 		NSString* match = [NSString stringWithFormat:@"\\b%@\\b", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
 		[protocolRules addObject:@{ @"name" : @(pair.first.c_str()), @"match" : match }];
 	}
 
 	for(auto const& pair : other)
 	{
+		if(mergeRules)
+			break;
 		NSString* match = [NSString stringWithFormat:@"\\b%@\\b", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
 		[patternRules addObject:@{ @"name" : @(pair.first.c_str()), @"match" : match }];
 	}
@@ -190,6 +227,33 @@ static void update_summary (char const* summaryPath, std::map<std::string, std::
 		}
 		fclose(fp);
 	}
+}
+
+// The scope segment for a header no table entry names, derived from its framework.
+// `…/CoreData.framework/Headers/NSManagedObject.h` gives `.core-data`, the innermost framework when they nest.
+// A header outside any framework, /usr/include and the like, gives no segment.
+static std::string framework_segment (std::string const& header)
+{
+	static std::regex const pattern("([^/]+)\\.framework/");
+	std::string name;
+	for(std::sregex_iterator it(header.begin(), header.end(), pattern), last; it != last; ++it)
+		name = (*it)[1];
+	if(name.empty())
+		return "";
+
+	// CoreData to core-data, AVFoundation to av-foundation, IOKit to io-kit: a hyphen where lower case meets upper case, and before the last capital of a run that starts a word.
+	std::string segment = ".";
+	for(size_t i = 0; i < name.size(); ++i)
+	{
+		bool const upper = isupper(name[i]);
+		bool const previousLower = i > 0 && islower(name[i-1]);
+		bool const nextLower = i + 1 < name.size() && islower(name[i+1]);
+		bool const previousUpper = i > 0 && isupper(name[i-1]);
+		if(upper && i > 0 && (previousLower || (previousUpper && nextLower)))
+			segment += '-';
+		segment += tolower(name[i]);
+	}
+	return segment;
 }
 
 // Parses a source file and returns its translation unit, or null after printing every error.
@@ -244,6 +308,11 @@ static void usage (FILE* io)
 		" -S, --sdk          Path to Xcode SDK.\n"
 		" -r, --resource-dir Path to clang's resource directory, which holds its own headers such as stdarg.h.\n"
 		" -x, --c-source     The C source whose headers belong to the C grammar and are left out of this one.\n"
+		" -f, --framework-segments\n"
+		"                    Give a header no table entry names a scope segment derived from its framework, `.core-data`, instead of none.\n"
+		" -m, --merge-rules  Write one rule per group of scopes, with the scopes as captures, instead of one rule per scope.\n"
+		" -n, --without-introduced-versions\n"
+		"                    Do not append the macOS version a symbol was introduced in to its scope. Deprecations keep theirs.\n"
 		" -s, --suffix       Suffix to append to scopes, e.g. `.objc`.\n"
 		" -c, --cocoa        Generate grammar for Objective-C frameworks.\n"
 		" -h, --help         Show this information.\n"
@@ -263,6 +332,9 @@ int main (int argc, char const* argv[])
 		{ "sdk",              required_argument,   0,      'S'   },
 		{ "resource-dir",     required_argument,   0,      'r'   },
 		{ "c-source",         required_argument,   0,      'x'   },
+		{ "framework-segments", no_argument,       0,      'f'   },
+		{ "merge-rules",      no_argument,         0,      'm'   },
+		{ "without-introduced-versions", no_argument, 0,   'n'   },
 		{ "suffix",           required_argument,   0,      's'   },
 		{ "cocoa",            no_argument,         0,      'c'   },
 		{ "help",             no_argument,         0,      'h'   },
@@ -277,19 +349,25 @@ int main (int argc, char const* argv[])
 	char const* cSourcePath = nullptr;
 	char const* suffix      = nullptr;
 	bool isObjectiveC       = false;
+	bool frameworkSegments  = false;
+	bool mergeRules         = false;
+	bool introducedVersions = true;
 
 	int ch;
-	while((ch = getopt_long(argc, (char**)argv, "o:t:S:r:x:s:chv", longopts, NULL)) != -1)
+	while((ch = getopt_long(argc, (char**)argv, "o:t:S:r:x:s:cfmnhv", longopts, NULL)) != -1)
 	{
 		switch(ch)
 		{
-			case 'o': grammarPath = optarg; break;
-			case 't': textPath = optarg;    break;
-			case 'S': sdkPath = optarg;     break;
-			case 'r': resourceDir = optarg; break;
-			case 'x': cSourcePath = optarg; break;
-			case 's': suffix = optarg;      break;
-			case 'c': isObjectiveC = true;  break;
+			case 'm': mergeRules = true;         break;
+			case 'n': introducedVersions = false; break;
+			case 'o': grammarPath = optarg;      break;
+			case 't': textPath = optarg;         break;
+			case 'S': sdkPath = optarg;          break;
+			case 'r': resourceDir = optarg;      break;
+			case 'x': cSourcePath = optarg;      break;
+			case 's': suffix = optarg;           break;
+			case 'c': isObjectiveC = true;       break;
+			case 'f': frameworkSegments = true;  break;
 			case 'h': usage(stdout);        return EX_OK;
 			case 'v': version(stdout);      return EX_OK;
 			case '?': /* unknown option */  return EX_USAGE;
@@ -422,7 +500,7 @@ int main (int argc, char const* argv[])
 				continue;
 
 			std::string scope = cursorTypes[kind];
-			scope += match.scope;
+			scope += match.scope.empty() && frameworkSegments ? framework_segment(header) : match.scope;
 
 			// A version with no minor part, 11 rather than 11.0, has Minor set to -1.
 			auto version_string = [](CXVersion const& version){
@@ -438,7 +516,7 @@ int main (int argc, char const* argv[])
 				scope = "invalid.deprecated.tba." + scope;
 			else if(deprecated)
 				scope = "invalid.deprecated." + version_string(available->Deprecated) + "." + scope;
-			else if(available && (available->Introduced.Major > 10 || (available->Introduced.Major == 10 && available->Introduced.Minor > 7)))
+			else if(introducedVersions && available && (available->Introduced.Major > 10 || (available->Introduced.Major == 10 && available->Introduced.Minor > 7)))
 				scope += "." + version_string(available->Introduced);
 
 			if(suffix)
@@ -456,7 +534,7 @@ int main (int argc, char const* argv[])
 	});
 
 	NSString* comment = [NSString stringWithFormat:@"This file was generated with clang-C using %@", [@(sdkPath) lastPathComponent]];
-	if(grammarPath && !update_grammar(@(grammarPath), functions, protocols, other, comment))
+	if(grammarPath && !update_grammar(@(grammarPath), functions, protocols, other, comment, mergeRules))
 	{
 		fprintf(stderr, "%s: error updating %s\n", getprogname(), grammarPath);
 		return EX_IOERR;

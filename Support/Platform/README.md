@@ -24,7 +24,17 @@ We parse either `includes.c` or `includes.mm` (based on the `--cocoa` flag) usin
 
 Once the file has been parsed we traverse the parse tree and harvest enumerations, functions, variable declarations, etc.
 
-For each symbol we check the path of the file path (from where the symbol came) against a list of regular expressions, this determines how to name the scope. A header matched by none of them still gets a scope, the bare `support.function` and the like with no framework segment, so everything the imports reach is highlighted. Core Services, Security and IOKit arrive this way, through Carbon and AppKit.
+For each symbol we check the path of the file path (from where the symbol came) against a list of regular expressions, this determines how to name the scope. A header matched by none of them still gets a scope: with `--framework-segments` the segment is derived from the framework, `support.class.core-data.objc` for a Core Data class, and without it the scope is the bare `support.class.objc`. Either way everything the imports reach is highlighted.
+
+## The shape of the grammar, and why
+
+The grammar engine tries every rule of a grammar against every line, so what a grammar costs is its rule count, not its symbol count, and after that the number of capture groups a rule carries. The Makefile passes three flags that follow from measuring that with `gtm`, the grammar test tool that ships with TextMate, on a 370 KB Objective-C sample:
+
+- `--merge-rules` writes one rule per group of scopes, with each scope's alternation as a capture group, instead of one rule per scope. Two thousand rules became three, and the same symbols get the same scopes.
+- `--framework-segments` gives every framework its own scope segment. Each segment multiplies the groups, which is affordable once the rules are merged.
+- `--without-introduced-versions` drops the `.10.12` style suffix that said which macOS a symbol arrived in. Those suffixes were two thirds of the groups and cost more than they say. Deprecation scopes keep their version, since a theme can act on `invalid.deprecated`.
+
+With all three, the grammars cover every framework in the SDK and highlight at the speed of the 2020 grammars, which covered a tenth of it.
 
 The Objective-C grammar includes the C grammar, so the Objective-C run is also given `includes.c` through `--c-source`, and leaves out every header that file reaches. Each symbol lands in one grammar.
 
