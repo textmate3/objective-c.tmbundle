@@ -28,8 +28,8 @@ static void visit (CXTranslationUnit tu, std::function<void(std::string const&, 
 		CXString name = clang_getCursorSpelling(cursor);
 		std::string const symbol = clang_getCString(name);
 		clang_disposeString(name);
-		// clang spells an anonymous type as "(unnamed struct at …)", which is not a name anyone types.
-		if(symbol.empty() || symbol.front() == '_' || symbol.front() == '(')
+		// clang spells an anonymous type as "(unnamed struct at …)" or "enum (unnamed at …)", which is not a name anyone types.
+		if(symbol.empty() || symbol.front() == '_' || symbol.find_first_of(" (") != std::string::npos)
 			return clang_getCursorKind(cursor) == CXCursor_EnumDecl ? CXChildVisit_Recurse : CXChildVisit_Continue;
 
 		CXSourceRange range = clang_getCursorExtent(cursor);
