@@ -14,6 +14,10 @@ C_BUNDLE    ?= $(abspath $(OBJC_BUNDLE)/../c.tmbundle)
 # Homebrew answers with the prefix whether or not llvm is installed, so the llvm target checks for the library.
 LLVM ?= $(shell brew --prefix llvm 2>/dev/null)
 
+# clang's own headers, stdarg.h and the like, live in its resource directory.
+# libclang does not find them on its own from inside the keg, so the generator is told where they are.
+RESOURCE_DIR=$(shell $(LLVM)/bin/clang -print-resource-dir 2>/dev/null)
+
 SDK=$(shell xcrun --sdk macosx --show-sdk-path)
 BUILD_DATE=$(shell date +%Y-%m-%d)
 CC=xcrun clang
@@ -25,10 +29,10 @@ OBJC_PATH=$(OBJC_BUNDLE)/Syntaxes/Platform
 all: c objective-c
 
 c: generator bundles
-	./generator --sdk=$(SDK) --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
+	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
 
 objective-c: generator bundles
-	./generator --sdk=$(SDK) --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa includes.mm
+	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
 
 generator: generator.mm Makefile llvm
 	@$(CC) $(CFLAGS) -o $@ $<
