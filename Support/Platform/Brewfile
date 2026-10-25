@@ -1,0 +1,5 @@
+# What the Platform grammar generator needs that Apple's toolchain does not provide.
+# Install with: brew bundle --file=Brewfile
+
+# libclang and the clang C headers, which the generator links against.
+brew "llvm"

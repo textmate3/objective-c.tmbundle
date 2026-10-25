@@ -1,18 +1,22 @@
 The code in this directory is used to generate `Platform.tmLanguage`.
 
-It requires `libclang` and the clang C includes. This can be obtained by installing `llvm`:
+It requires `libclang` and the clang C includes, which Apple's toolchain does not ship. The `Brewfile` in this directory lists them:
 
-	brew install llvm
+	brew bundle --file=Brewfile
 
-There is a `Makefile` which builds the `generator` executable and will also update `Platform.tmLanguage` in the C and Objective-C bundles.
+There is a `Makefile` which builds the `generator` executable and will also update `Platform.tmLanguage` and `Platform.md` in the C and Objective-C bundles.
 
-Before running `make` you should clone the respective bundles:
+The Makefile finds everything from its own location. This directory is `Support/Platform` inside `objective-c.tmbundle`, and `c.tmbundle` is expected to be checked out beside it, so a layout like this needs no configuration:
 
-```shell
-cd ~/Library/Application\ Support/TextMate/Bundles
-git clone "git@github.com:textmate/c.tmbundle"
-git clone "git@github.com:textmate/objective-c.tmbundle"
-```
+	bundles/
+	  c.tmbundle/
+	  objective-c.tmbundle/
+
+Either bundle can be somewhere else, and libclang can come from somewhere other than Homebrew:
+
+	make C_BUNDLE=/path/to/c.tmbundle OBJC_BUNDLE=/path/to/objective-c.tmbundle LLVM=/path/to/llvm
+
+`make` refuses with a message naming what is missing when libclang or a bundle is not where it expects.
 
 ## How it Works
 
