@@ -2,4 +2,4 @@
 # Install with: brew bundle --file=Brewfile
 
 # libclang and the clang C headers, which the generator links against.
-brew "llvm"
+brew 'llvm'
