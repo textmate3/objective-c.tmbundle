@@ -26,13 +26,18 @@ CFLAGS=-Os -Wall -std=c++1y -lc++ --sysroot $(SDK) -DCOMPILE_DATE=\"$(BUILD_DATE
 C_PATH=$(C_BUNDLE)/Syntaxes/Platform
 OBJC_PATH=$(OBJC_BUNDLE)/Syntaxes/Platform
 
+# The shape of the grammar, chosen by measurement, see README.md.
+# A scope segment per framework, one rule per group of scopes so highlighting stays fast,
+# and no introduced-in version on scopes, which halves the capture groups and is what makes the segments affordable.
+SHAPE=--framework-segments --merge-rules --without-introduced-versions
+
 all: c objective-c
 
 c: generator bundles
-	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
+	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
 
 objective-c: generator bundles
-	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
+	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
 
 generator: generator.mm Makefile llvm
 	@$(CC) $(CFLAGS) -o $@ $<
