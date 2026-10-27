@@ -35,15 +35,15 @@ A name keeps the framework segment of the first SDK that declared it, macOS firs
 
 Once the file has been parsed we traverse the parse tree and harvest enumerations, functions, variable declarations, etc.
 
-For each symbol we check the path of the file path (from where the symbol came) against a list of regular expressions, this determines how to name the scope. A header matched by none of them still gets a scope: with `--framework-segments` the segment is derived from the framework, `support.class.core-data.objc` for a Core Data class, and without it the scope is the bare `support.class.objc`. Either way everything the imports reach is highlighted.
+For each symbol we check the path of the file path (from where the symbol came) against a list of regular expressions, this determines how to name the scope. A header matched by none of them still gets a scope, with a segment derived from its framework, `support.class.core-data.objc` for a Core Data class, so everything the imports reach is highlighted.
 
 ## The shape of the grammar, and why
 
-The grammar engine tries every rule of a grammar against every line, so what a grammar costs is its rule count, not its symbol count, and after that the number of capture groups a rule carries. The Makefile passes three flags that follow from measuring that with `gtm`, the grammar test tool that ships with TextMate, on a 370 KB Objective-C sample:
+The grammar engine tries every rule of a grammar against every line, so what a grammar costs is its rule count, not its symbol count, and after that the number of capture groups a rule carries. Three choices follow from measuring that with `gtm`, the grammar test tool that ships with TextMate, on a 370 KB Objective-C sample:
 
-- `--merge-rules` writes one rule per group of scopes, with each scope's alternation as a capture group, instead of one rule per scope. Two thousand rules became three, and the same symbols get the same scopes.
-- `--framework-segments` gives every framework its own scope segment. Each segment multiplies the groups, which is affordable once the rules are merged.
-- `--without-deprecation-versions` marks a deprecated symbol `invalid.deprecated` with no version, so every deprecation of a kind in a framework shares one group instead of one per version per platform.
+- One rule per group of scopes, with each scope's alternation as a capture group, instead of one rule per scope. Two thousand rules became three, and the same symbols get the same scopes.
+- A scope segment per framework. Each segment multiplies the groups, which is affordable once the rules are merged.
+- No version on a deprecated symbol's scope, so every deprecation of a kind in a framework shares one group instead of one per version per platform.
 
 With all three, the grammars cover every framework on every platform and highlight at the speed of the 2020 grammars, which covered a tenth of one platform.
 

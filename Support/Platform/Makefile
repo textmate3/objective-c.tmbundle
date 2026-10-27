@@ -36,18 +36,13 @@ sdk_target=$(word 3,$(subst :, ,$(1)))
 sdk_path=$(shell xcrun --sdk $(call sdk_name,$(1)) --show-sdk-path 2>/dev/null)
 SDKS=$(foreach p,$(PLATFORMS),--sdk='$(call sdk_path,$(p))' --platform=$(call sdk_platform,$(p)) --target=$(call sdk_target,$(p)))
 
-# The shape of the grammar, chosen by measurement, see README.md.
-# A scope segment per framework, one rule per group of scopes so highlighting stays fast,
-# and deprecation without a version, since a version from one platform's numbering says nothing on another and each one costs a capture group.
-SHAPE=--framework-segments --merge-rules --without-deprecation-versions
-
 all: c objective-c
 
 c: generator bundles sdks
-	./generator $(SDKS) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
+	./generator $(SDKS) --resource-dir='$(RESOURCE_DIR)' --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
 
 objective-c: generator bundles sdks
-	./generator $(SDKS) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
+	./generator $(SDKS) --resource-dir='$(RESOURCE_DIR)' --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
 
 sdks:
 	@$(foreach p,$(PLATFORMS),test -d '$(call sdk_path,$(p))' || { echo "No SDK for $(call sdk_name,$(p)): xcrun --sdk $(call sdk_name,$(p)) --show-sdk-path found nothing. Every platform SDK ships inside Xcode, so check xcode-select -p names the Xcode you mean" >&2; exit 1; };)

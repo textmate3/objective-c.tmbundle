@@ -139,52 +139,20 @@ static NSDictionary* merged_rule (std::map<std::string, std::set<std::string>> c
 	return @{ @"match" : match, @"captures" : captures };
 }
 
-static BOOL update_grammar (NSString* grammarPath, std::map<std::string, std::set<std::string>> const& functions, std::map<std::string, std::set<std::string>> const& protocols, std::map<std::string, std::set<std::string>> const& other, NSString* comment, BOOL mergeRules)
+// Writes the three merged rules into the grammar: one for functions, one for protocols and one for everything else.
+static BOOL update_grammar (NSString* grammarPath, std::map<std::string, std::set<std::string>> const& functions, std::map<std::string, std::set<std::string>> const& protocols, std::map<std::string, std::set<std::string>> const& other, NSString* comment)
 {
 	NSMutableArray* patternRules  = [NSMutableArray new];
 	NSMutableArray* functionRules = [NSMutableArray new];
 	NSMutableArray* protocolRules = [NSMutableArray new];
 
-	if(mergeRules)
-	{
-		NSMutableDictionary* functionCaptures = [NSMutableDictionary dictionaryWithDictionary:@{ @"1" : @{ @"name" : @"punctuation.whitespace.support.function.leading" } }];
-		if(!functions.empty())
-			[functionRules addObject:merged_rule(functions, @"(\\s*)", functionCaptures)];
-		if(!protocols.empty())
-			[protocolRules addObject:merged_rule(protocols, @"", [NSMutableDictionary new])];
-		if(!other.empty())
-			[patternRules addObject:merged_rule(other, @"", [NSMutableDictionary new])];
-	}
-
-	for(auto const& pair : functions)
-	{
-		if(mergeRules)
-			break;
-		NSString* match = [NSString stringWithFormat:@"\\b%@\\b", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
-		[functionRules addObject:@{
-			@"match" : [NSString stringWithFormat:@"(\\s*)(%@)", match],
-			@"captures" : @{
-				@"1" : @{ @"name" : @"punctuation.whitespace.support.function.leading" },
-				@"2" : @{ @"name" : @(pair.first.c_str()) }
-			}
-		}];
-	}
-
-	for(auto const& pair : protocols)
-	{
-		if(mergeRules)
-			break;
-		NSString* match = [NSString stringWithFormat:@"\\b%@\\b", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
-		[protocolRules addObject:@{ @"name" : @(pair.first.c_str()), @"match" : match }];
-	}
-
-	for(auto const& pair : other)
-	{
-		if(mergeRules)
-			break;
-		NSString* match = [NSString stringWithFormat:@"\\b%@\\b", @(strings_to_regexp(pair.second.begin(), pair.second.end()).c_str())];
-		[patternRules addObject:@{ @"name" : @(pair.first.c_str()), @"match" : match }];
-	}
+	NSMutableDictionary* functionCaptures = [NSMutableDictionary dictionaryWithDictionary:@{ @"1" : @{ @"name" : @"punctuation.whitespace.support.function.leading" } }];
+	if(!functions.empty())
+		[functionRules addObject:merged_rule(functions, @"(\\s*)", functionCaptures)];
+	if(!protocols.empty())
+		[protocolRules addObject:merged_rule(protocols, @"", [NSMutableDictionary new])];
+	if(!other.empty())
+		[patternRules addObject:merged_rule(other, @"", [NSMutableDictionary new])];
 
 	if(NSMutableDictionary* plist = [NSMutableDictionary dictionaryWithContentsOfFile:grammarPath])
 	{
@@ -314,11 +282,6 @@ static void usage (FILE* io)
 		" -T, --target       The target triple to parse the SDK as, such as arm64-apple-ios.\n"
 		" -r, --resource-dir Path to clang's resource directory, which holds its own headers such as stdarg.h.\n"
 		" -x, --c-source     The C source whose headers belong to the C grammar and are left out of this one.\n"
-		" -f, --framework-segments\n"
-		"                    Give a header no table entry names a scope segment derived from its framework, `.core-data`, instead of none.\n"
-		" -m, --merge-rules  Write one rule per group of scopes, with the scopes as captures, instead of one rule per scope.\n"
-		" -d, --without-deprecation-versions\n"
-		"                    Mark deprecated symbols invalid.deprecated with no version, so every deprecation of a kind shares one capture group.\n"
 		" -s, --suffix       Suffix to append to scopes, e.g. `.objc`.\n"
 		" -c, --cocoa        Generate grammar for Objective-C frameworks.\n"
 		" -h, --help         Show this information.\n"
@@ -340,9 +303,6 @@ int main (int argc, char const* argv[])
 		{ "target",           required_argument,   0,      'T'   },
 		{ "resource-dir",     required_argument,   0,      'r'   },
 		{ "c-source",         required_argument,   0,      'x'   },
-		{ "framework-segments", no_argument,       0,      'f'   },
-		{ "merge-rules",      no_argument,         0,      'm'   },
-		{ "without-deprecation-versions", no_argument, 0,  'd'   },
 		{ "suffix",           required_argument,   0,      's'   },
 		{ "cocoa",            no_argument,         0,      'c'   },
 		{ "help",             no_argument,         0,      'h'   },
@@ -359,17 +319,12 @@ int main (int argc, char const* argv[])
 	char const* cSourcePath = nullptr;
 	char const* suffix      = nullptr;
 	bool isObjectiveC       = false;
-	bool frameworkSegments  = false;
-	bool mergeRules         = false;
-	bool deprecationVersions = true;
 
 	int ch;
-	while((ch = getopt_long(argc, (char**)argv, "o:t:S:p:T:r:x:s:cfmdhv", longopts, NULL)) != -1)
+	while((ch = getopt_long(argc, (char**)argv, "o:t:S:p:T:r:x:s:chv", longopts, NULL)) != -1)
 	{
 		switch(ch)
 		{
-			case 'm': mergeRules = true;         break;
-			case 'd': deprecationVersions = false; break;
 			case 'o': grammarPath = optarg;      break;
 			case 't': textPath = optarg;         break;
 			case 'S': sdkPaths.push_back(optarg);  break;
@@ -379,7 +334,6 @@ int main (int argc, char const* argv[])
 			case 'x': cSourcePath = optarg;      break;
 			case 's': suffix = optarg;           break;
 			case 'c': isObjectiveC = true;       break;
-			case 'f': frameworkSegments = true;  break;
 			case 'h': usage(stdout);        return EX_OK;
 			case 'v': version(stdout);      return EX_OK;
 			case '?': /* unknown option */  return EX_USAGE;
@@ -474,20 +428,15 @@ int main (int argc, char const* argv[])
 	// The union over every SDK.
 	// A symbol is keyed by its kind's scope and its name, so a name that is a function on one platform and a type on another stays two entries.
 	// Each entry records its framework segment from the first SDK that declared it, macOS first, so a name that moved frameworks between platforms has one scope.
-	// It also records the platforms it exists on and, per platform, the version it is deprecated in.
+	// It also records the platforms it exists on and the platforms it is deprecated on.
 	struct symbol_t
 	{
 		CXCursorKind kind;
 		std::string segment;
 		std::vector<std::string> platforms;
-		std::map<std::string, std::string> deprecatedOn;
+		std::set<std::string> deprecatedOn;
 	};
 	std::map<std::pair<std::string, std::string>, symbol_t> symbols;
-
-	// A version with no minor part, 11 rather than 11.0, has Minor set to -1.
-	auto version_string = [](CXVersion const& version){
-		return std::to_string(version.Major) + "." + std::to_string(std::max(version.Minor, 0));
-	};
 
 	CXIndex index = clang_createIndex(0, 0);
 	NSMutableArray* sdkNames = [NSMutableArray new];
@@ -555,17 +504,16 @@ int main (int argc, char const* argv[])
 				symbol_t& entry = symbols[{ cursorTypes[kind], symbol }];
 				entry.kind = kind;
 				if(entry.segment.empty())
-					entry.segment = match.scope.empty() && frameworkSegments ? framework_segment(header) : match.scope;
+					entry.segment = match.scope.empty() ? framework_segment(header) : match.scope;
 				if(std::find(entry.platforms.begin(), entry.platforms.end(), platform) == entry.platforms.end())
 					entry.platforms.push_back(platform);
 
 				// Apple deprecated the whole of OpenGL in 10.14 and of OpenGL ES in iOS 12, and still ships both.
 				// Marking every one of their symbols would turn working OpenGL code red, so neither is ever marked deprecated.
+				// Apple's API_TO_BE_DEPRECATED, a deprecation with no version, counts: clang reports it as version 100000.
 				bool const deprecated = available && available->Deprecated.Major > 0 && header.find("/OpenGL.framework/") == std::string::npos && header.find("/OpenGLES.framework/") == std::string::npos;
-
-				// Apple's API_TO_BE_DEPRECATED is a deprecation with no version, which clang reports as version 100000.
 				if(deprecated)
-					entry.deprecatedOn[platform] = available->Deprecated.Major == 100000 ? "tba" : version_string(available->Deprecated);
+					entry.deprecatedOn.insert(platform);
 
 				break;
 			}
@@ -576,7 +524,7 @@ int main (int argc, char const* argv[])
 
 	// A symbol is deprecated when it is deprecated on every platform that has it, and current while any platform still wants it.
 	// A theme cannot know which platform a file targets, so the grammar does not pretend to.
-	// The version is macOS's when the symbol is on macOS, otherwise the first platform's in the order given, so one name has one scope.
+	// The scope carries no version: 12.0 is a different year on iOS and on macOS, and each distinct version would cost a capture group.
 	for(auto const& pair : symbols)
 	{
 		std::string const& name = pair.first.second;
@@ -584,11 +532,7 @@ int main (int argc, char const* argv[])
 		std::string scope = pair.first.first + entry.segment;
 
 		if(!entry.deprecatedOn.empty() && entry.deprecatedOn.size() == entry.platforms.size())
-		{
-			auto macos = entry.deprecatedOn.find("macos");
-			std::string const version = macos != entry.deprecatedOn.end() ? macos->second : entry.deprecatedOn.at(entry.platforms.front());
-			scope = deprecationVersions ? "invalid.deprecated." + version + "." + scope : "invalid.deprecated." + scope;
-		}
+			scope = "invalid.deprecated." + scope;
 
 		if(suffix)
 			scope += suffix;
@@ -602,7 +546,7 @@ int main (int argc, char const* argv[])
 	}
 
 	NSString* comment = [NSString stringWithFormat:@"This file was generated with clang-C using %@", [sdkNames componentsJoinedByString:@", "]];
-	if(grammarPath && !update_grammar(@(grammarPath), functions, protocols, other, comment, mergeRules))
+	if(grammarPath && !update_grammar(@(grammarPath), functions, protocols, other, comment))
 	{
 		fprintf(stderr, "%s: error updating %s\n", getprogname(), grammarPath);
 		return EX_IOERR;
