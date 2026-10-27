@@ -47,6 +47,13 @@ objective-c: generator bundles sdks
 sdks:
 	@$(foreach p,$(PLATFORMS),test -d '$(call sdk_path,$(p))' || { echo "No SDK for $(call sdk_name,$(p)): xcrun --sdk $(call sdk_name,$(p)) --show-sdk-path found nothing. Every platform SDK ships inside Xcode, so check xcode-select -p names the Xcode you mean" >&2; exit 1; };)
 
+# Regenerates both grammars into a temporary directory and times them with gtm, see benchmark.
+benchmark: rv
+	rv run ruby benchmark
+
+rv:
+	@command -v rv >/dev/null 2>&1 || { echo "rv not found. Install it from the Brewfile beside this Makefile: brew bundle --file='$(here)Brewfile'" >&2; exit 1; }
+
 generator: generator.mm Makefile llvm
 	@$(CC) $(CFLAGS) -o $@ $<
 
@@ -57,4 +64,4 @@ bundles:
 	@test -d '$(OBJC_BUNDLE)/Syntaxes' || { echo "objective-c.tmbundle not found at $(OBJC_BUNDLE). Pass OBJC_BUNDLE=path" >&2; exit 1; }
 	@test -d '$(C_BUNDLE)/Syntaxes' || { echo "c.tmbundle not found at $(C_BUNDLE). Clone it beside objective-c.tmbundle or pass C_BUNDLE=path" >&2; exit 1; }
 
-.PHONY: all c objective-c llvm bundles sdks
+.PHONY: all c objective-c llvm bundles sdks benchmark rv

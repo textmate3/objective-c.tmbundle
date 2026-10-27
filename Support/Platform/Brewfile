@@ -3,3 +3,6 @@
 
 # libclang and the clang C headers, which the generator links against.
 brew 'llvm'
+
+# The Ruby manager, which runs the benchmark on the Ruby this bundle pins in .ruby-version.
+brew 'rv'

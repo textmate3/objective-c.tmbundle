@@ -47,6 +47,14 @@ The grammar engine tries every rule of a grammar against every line, so what a g
 
 With all three, the grammars cover every framework on every platform and highlight at the speed of the 2020 grammars, which covered a tenth of one platform.
 
+## Measuring
+
+	make benchmark
+
+regenerates both grammars into a temporary directory, leaving the checkouts untouched, and times each with `gtm` over a sample made from SDK headers every machine with Xcode has. It prints rules, capture groups, bytes, symbols and bytes per second, best of three. `gtm` is built by the TextMate repository and found in its build directory, or named with `GTM=path`. The benchmark runs on the Ruby this bundle pins in `.ruby-version`, through `rv`, which the `Brewfile` lists.
+
+Any change to the generator should be measured this way before and after. Rules and groups are the cost, symbols are free.
+
 The Objective-C grammar includes the C grammar, so the Objective-C run is also given `includes.c` through `--c-source`, and leaves out every header that file reaches. Each symbol lands in one grammar.
 
 Deprecated symbols get `invalid.deprecated` in front of their scope. OpenGL and OpenGL ES are the exceptions: Apple deprecated all of both and still ships them, so neither is ever marked deprecated.

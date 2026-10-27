@@ -1,0 +1,145 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# benchmark: how much the Platform grammars cost to highlight with.
+#
+# Regenerates both grammars into a temporary directory, so the checkouts are untouched,
+# then times each one with gtm, the grammar test tool from the TextMate build, over a sample
+# made from SDK headers that every machine with Xcode has. Prints a table of rules, capture
+# groups, bytes, symbols and bytes per second, best of three runs.
+#
+# Run it through the Makefile beside this file: make benchmark
+
+require "fileutils"
+require "open3"
+require "optparse"
+require "tmpdir"
+
+HERE = __dir__
+OBJECTIVE_C_BUNDLE = File.expand_path("../..", HERE)
+C_BUNDLE = File.expand_path("../c.tmbundle", OBJECTIVE_C_BUNDLE)
+
+# The samples are concatenated SDK headers, so the measurement is the same on any machine with the same Xcode.
+C_SAMPLE_HEADERS = %w[
+  CoreFoundation/CFArray.h
+  CoreFoundation/CFDictionary.h
+  CoreFoundation/CFRunLoop.h
+  CoreFoundation/CFString.h
+  CoreFoundation/CFURL.h
+  CoreGraphics/CGContext.h
+  CoreGraphics/CGPath.h
+].freeze
+
+OBJECTIVE_C_SAMPLE_HEADERS = %w[
+  AppKit/NSApplication.h
+  AppKit/NSTextView.h
+  AppKit/NSView.h
+  AppKit/NSWindow.h
+  Foundation/NSArray.h
+  Foundation/NSString.h
+  Foundation/NSURLSession.h
+].freeze
+
+# gtm lives only in the TextMate build directory until the application installs it somewhere.
+GTM_CANDIDATES = [
+  File.expand_path("~/build/textmate/release/Applications/gtm/gtm"),
+  File.expand_path("~/build/textmate/debug/Applications/gtm/gtm")
+].freeze
+
+Grammar = Data.define(:name, :grammar_path, :summary_path, :sample_path)
+
+class Benchmark
+  def initialize(gtm:, regenerate:, runs:)
+    @gtm = gtm
+    @regenerate = regenerate
+    @runs = runs
+  end
+
+  def run
+    Dir.mktmpdir("platform-benchmark") do |directory|
+      c_sample = write_sample(directory, "sample.c", C_SAMPLE_HEADERS)
+      objective_c_sample = write_sample(directory, "sample.mm", OBJECTIVE_C_SAMPLE_HEADERS)
+      c_root, objective_c_root = @regenerate ? regenerate_into(directory) : [C_BUNDLE, OBJECTIVE_C_BUNDLE]
+
+      grammars = [
+        Grammar.new(name: "C", grammar_path: "#{c_root}/Syntaxes/Platform.tmLanguage", summary_path: "#{c_root}/Syntaxes/Platform.md", sample_path: c_sample),
+        Grammar.new(name: "Objective-C", grammar_path: "#{objective_c_root}/Syntaxes/Platform.tmLanguage", summary_path: "#{objective_c_root}/Syntaxes/Platform.md", sample_path: objective_c_sample)
+      ]
+
+      puts "| Grammar | Rules | Groups | Bytes | Symbols | Sample bytes | Bytes per second |"
+      puts "|---|---:|---:|---:|---:|---:|---:|"
+      grammars.each { puts row(it) }
+    end
+  end
+
+  private
+
+  def sdk_path
+    @sdk_path ||= `xcrun --sdk macosx --show-sdk-path`.strip.tap do |path|
+      abort "xcrun found no macOS SDK, so there is nothing to build a sample from" if path.empty?
+    end
+  end
+
+  def write_sample(directory, name, headers)
+    path = File.join(directory, name)
+    File.open(path, "w") do |sample|
+      headers.each do |header|
+        framework, file = header.split("/", 2)
+        sample.write(File.read("#{sdk_path}/System/Library/Frameworks/#{framework}.framework/Headers/#{file}"))
+      end
+    end
+    path
+  end
+
+  # Copies each bundle's Syntaxes into the temporary directory and runs the Makefile against the copies.
+  # The generator updates an existing grammar file, so the copy is also the seed it writes into.
+  def regenerate_into(directory)
+    c_root = File.join(directory, "c.tmbundle")
+    objective_c_root = File.join(directory, "objective-c.tmbundle")
+    FileUtils.mkdir_p([c_root, objective_c_root])
+    FileUtils.cp_r("#{C_BUNDLE}/Syntaxes", c_root)
+    FileUtils.cp_r("#{OBJECTIVE_C_BUNDLE}/Syntaxes", objective_c_root)
+
+    warn "Regenerating both grammars into #{directory}"
+    output, status = Open3.capture2e("make", "-C", HERE, "C_BUNDLE=#{c_root}", "OBJC_BUNDLE=#{objective_c_root}")
+    abort output unless status.success?
+
+    [c_root, objective_c_root]
+  end
+
+  def row(grammar)
+    plist = File.read(grammar.grammar_path)
+    rules = plist.scan("<key>match</key>").size
+    groups = plist.scan(%r{<key>\d+</key>}).size
+    bytes = File.size(grammar.grammar_path)
+    symbols = File.foreach(grammar.summary_path).count { it.start_with?("- `") }
+    sample_bytes = File.size(grammar.sample_path)
+    speed = best_speed(grammar)
+    "| #{grammar.name} | #{thousands(rules)} | #{thousands(groups)} | #{thousands(bytes)} | #{thousands(symbols)} | #{thousands(sample_bytes)} | #{thousands(speed)} |"
+  end
+
+  def best_speed(grammar)
+    sample = File.read(grammar.sample_path)
+    @runs.times.map do
+      output, status = Open3.capture2e(@gtm, "-l", grammar.grammar_path, stdin_data: sample)
+      abort "gtm failed on #{grammar.grammar_path}:\n#{output}" unless status.success?
+      output[%r{\((\d+) bytes/s\)}, 1].to_i
+    end.max
+  end
+
+  def thousands(number) = number.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+end
+
+options = { gtm: ENV.fetch("GTM", GTM_CANDIDATES.find { File.executable?(it) }), regenerate: true, runs: 3 }
+OptionParser.new do |parser|
+  parser.banner = "Usage: benchmark [options]"
+  parser.on("--gtm PATH", "The gtm executable. Defaults to $GTM, then the TextMate build directory.") { options[:gtm] = it }
+  parser.on("--no-regenerate", "Time the grammars as checked out instead of regenerating them first.") { options[:regenerate] = false }
+  parser.on("--runs N", Integer, "How many timed runs per grammar, keeping the best. Defaults to 3.") { options[:runs] = it }
+end.parse!
+
+if options[:gtm].nil? || !File.executable?(options[:gtm])
+  abort "gtm not found. It is built by the TextMate repository, as the gtm target of its build, and lands in its build directory. Pass --gtm PATH or set GTM."
+end
+
+Benchmark.new(**options).run
