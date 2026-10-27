@@ -10,6 +10,8 @@
 #import <set>
 #import <vector>
 #import <algorithm>
+#import <utility>
+#import <errno.h>
 
 static char const* const kAppVersion = "1.0";
 
@@ -17,7 +19,9 @@ static char const* const kAppVersion = "1.0";
 #define COMPILE_DATE "YYYY-MM-DD"
 #endif
 
-static void visit (CXTranslationUnit tu, std::function<void(std::string const&, CXCursorKind, CXPlatformAvailability const*, std::string const&, CXCursor)> callback)
+// Walks every declaration in the translation unit and hands each named one to the callback,
+// with its availability on the given platform, `macos`, `ios`, `tvos`, `watchos` or `xros`, or null when the symbol says nothing about it.
+static void visit (CXTranslationUnit tu, char const* platform, std::function<void(std::string const&, CXCursorKind, CXPlatformAvailability const*, std::string const&, CXCursor)> callback)
 {
 	std::set<CXCursorKind> const desiredCursorKinds = { CXCursor_StructDecl, CXCursor_EnumDecl, CXCursor_TypedefDecl, CXCursor_FunctionDecl, CXCursor_ObjCProtocolDecl, CXCursor_ObjCInterfaceDecl, CXCursor_VarDecl, CXCursor_EnumConstantDecl };
 	clang_visitChildrenWithBlock(clang_getTranslationUnitCursor(tu), ^(CXCursor cursor, CXCursor parent){
@@ -51,7 +55,7 @@ static void visit (CXTranslationUnit tu, std::function<void(std::string const&, 
 		CXPlatformAvailability* available = nullptr;
 		for(int i = 0; i < n && !available; ++i)
 		{
-			if(strcmp("macos", clang_getCString(availability[i].Platform)) == 0)
+			if(strcmp(platform, clang_getCString(availability[i].Platform)) == 0)
 				available = &availability[i];
 		}
 
@@ -305,14 +309,16 @@ static void usage (FILE* io)
 		"Options:\n"
 		" -o, --grammar      The tmGrammar file to generate/update.\n"
 		" -t, --text         Write all symbols to this file in a readable format.\n"
-		" -S, --sdk          Path to Xcode SDK.\n"
+		" -S, --sdk          Path to an SDK. Repeat for every platform, with a --platform and a --target for each, in the same order.\n"
+		" -p, --platform     The platform's name in availability attributes: macos, ios, tvos, watchos or xros.\n"
+		" -T, --target       The target triple to parse the SDK as, such as arm64-apple-ios.\n"
 		" -r, --resource-dir Path to clang's resource directory, which holds its own headers such as stdarg.h.\n"
 		" -x, --c-source     The C source whose headers belong to the C grammar and are left out of this one.\n"
 		" -f, --framework-segments\n"
 		"                    Give a header no table entry names a scope segment derived from its framework, `.core-data`, instead of none.\n"
 		" -m, --merge-rules  Write one rule per group of scopes, with the scopes as captures, instead of one rule per scope.\n"
-		" -n, --without-introduced-versions\n"
-		"                    Do not append the macOS version a symbol was introduced in to its scope. Deprecations keep theirs.\n"
+		" -d, --without-deprecation-versions\n"
+		"                    Mark deprecated symbols invalid.deprecated with no version, so every deprecation of a kind shares one capture group.\n"
 		" -s, --suffix       Suffix to append to scopes, e.g. `.objc`.\n"
 		" -c, --cocoa        Generate grammar for Objective-C frameworks.\n"
 		" -h, --help         Show this information.\n"
@@ -330,11 +336,13 @@ int main (int argc, char const* argv[])
 		{ "grammar",          required_argument,   0,      'o'   },
 		{ "text",             required_argument,   0,      't'   },
 		{ "sdk",              required_argument,   0,      'S'   },
+		{ "platform",         required_argument,   0,      'p'   },
+		{ "target",           required_argument,   0,      'T'   },
 		{ "resource-dir",     required_argument,   0,      'r'   },
 		{ "c-source",         required_argument,   0,      'x'   },
 		{ "framework-segments", no_argument,       0,      'f'   },
 		{ "merge-rules",      no_argument,         0,      'm'   },
-		{ "without-introduced-versions", no_argument, 0,   'n'   },
+		{ "without-deprecation-versions", no_argument, 0,  'd'   },
 		{ "suffix",           required_argument,   0,      's'   },
 		{ "cocoa",            no_argument,         0,      'c'   },
 		{ "help",             no_argument,         0,      'h'   },
@@ -344,25 +352,29 @@ int main (int argc, char const* argv[])
 
 	char const* grammarPath = nullptr;
 	char const* textPath    = nullptr;
-	char const* sdkPath     = nullptr;
+	std::vector<char const*> sdkPaths;
+	std::vector<char const*> platforms;
+	std::vector<char const*> targets;
 	char const* resourceDir = nullptr;
 	char const* cSourcePath = nullptr;
 	char const* suffix      = nullptr;
 	bool isObjectiveC       = false;
 	bool frameworkSegments  = false;
 	bool mergeRules         = false;
-	bool introducedVersions = true;
+	bool deprecationVersions = true;
 
 	int ch;
-	while((ch = getopt_long(argc, (char**)argv, "o:t:S:r:x:s:cfmnhv", longopts, NULL)) != -1)
+	while((ch = getopt_long(argc, (char**)argv, "o:t:S:p:T:r:x:s:cfmdhv", longopts, NULL)) != -1)
 	{
 		switch(ch)
 		{
 			case 'm': mergeRules = true;         break;
-			case 'n': introducedVersions = false; break;
+			case 'd': deprecationVersions = false; break;
 			case 'o': grammarPath = optarg;      break;
 			case 't': textPath = optarg;         break;
-			case 'S': sdkPath = optarg;          break;
+			case 'S': sdkPaths.push_back(optarg);  break;
+			case 'p': platforms.push_back(optarg); break;
+			case 'T': targets.push_back(optarg);   break;
 			case 'r': resourceDir = optarg;      break;
 			case 'x': cSourcePath = optarg;      break;
 			case 's': suffix = optarg;           break;
@@ -388,11 +400,17 @@ int main (int argc, char const* argv[])
 	char const* sourcePath = argv[0];
 
 	// There is no default SDK: a baked in path names one release and is wrong on the next.
-	// The Makefile asks xcrun for the current one.
-	if(!sdkPath)
+	// The Makefile asks xcrun for each platform's, and names the platform and target beside it.
+	if(sdkPaths.empty())
 	{
-		fprintf(stderr, "%s: --sdk is required\n", getprogname());
+		fprintf(stderr, "%s: --sdk is required, once per platform\n", getprogname());
 		usage(stderr);
+		return EX_USAGE;
+	}
+
+	if(platforms.size() != sdkPaths.size() || targets.size() != sdkPaths.size())
+	{
+		fprintf(stderr, "%s: every --sdk needs a --platform and a --target, in the same order: %zu SDKs, %zu platforms, %zu targets\n", getprogname(), sdkPaths.size(), platforms.size(), targets.size());
 		return EX_USAGE;
 	}
 
@@ -402,49 +420,13 @@ int main (int argc, char const* argv[])
 		return EX_USAGE;
 	}
 
-	if(access(sdkPath, R_OK) != 0)
+	for(char const* sdkPath : sdkPaths)
 	{
-		perror("error reading SDK");
-		return EX_USAGE;
-	}
-
-	CXIndex index = clang_createIndex(0, 0);
-
-	std::vector<char const*> cArgs = { "--sysroot", sdkPath };
-
-	// libclang looks for clang's own headers, stdarg.h and the like, relative to its own library.
-	// Homebrew's keg does not resolve that way, so the caller says where they are.
-	if(resourceDir)
-	{
-		cArgs.push_back("-resource-dir");
-		cArgs.push_back(resourceDir);
-	}
-
-	// clang picks the language from the extension: includes.c is C and includes.mm is Objective-C++.
-	// A C++ standard is an error for a C file, so the C++ flags only go with the Objective-C run.
-	std::vector<char const*> args = cArgs;
-	if(isObjectiveC)
-	{
-		args.push_back("-std=c++1y");
-		args.push_back("-stdlib=libc++");
-	}
-
-	CXTranslationUnit tu = parse(index, sourcePath, args);
-	if(!tu)
-		return EX_DATAERR;
-
-	// The Objective-C grammar includes the C grammar, so every header the C source reaches belongs to the C run.
-	// The C source is parsed here only to learn which headers those are.
-	std::set<std::string> cHeaders;
-	if(cSourcePath)
-	{
-		CXTranslationUnit cTu = parse(index, cSourcePath, cArgs);
-		if(!cTu)
-			return EX_DATAERR;
-		visit(cTu, [&](std::string const&, CXCursorKind, CXPlatformAvailability const*, std::string const& header, CXCursor){
-			cHeaders.insert(header);
-		});
-		clang_disposeTranslationUnit(cTu);
+		if(access(sdkPath, R_OK) != 0)
+		{
+			fprintf(stderr, "%s: error reading SDK %s: %s\n", getprogname(), sdkPath, strerror(errno));
+			return EX_USAGE;
+		}
 	}
 
 	std::map<CXCursorKind, char const*> cursorTypes =
@@ -489,51 +471,137 @@ int main (int argc, char const* argv[])
 		};
 	}
 
-	visit(tu, [&](std::string const& symbol, CXCursorKind kind, CXPlatformAvailability const* available, std::string const& header, CXCursor cursor){
-		// A header the C run owns is skipped here, or the catch-all would copy the whole C grammar into this one.
-		if(cHeaders.count(header))
-			return;
+	// The union over every SDK.
+	// A symbol is keyed by its kind's scope and its name, so a name that is a function on one platform and a type on another stays two entries.
+	// Each entry records its framework segment from the first SDK that declared it, macOS first, so a name that moved frameworks between platforms has one scope.
+	// It also records the platforms it exists on and, per platform, the version it is deprecated in.
+	struct symbol_t
+	{
+		CXCursorKind kind;
+		std::string segment;
+		std::vector<std::string> platforms;
+		std::map<std::string, std::string> deprecatedOn;
+	};
+	std::map<std::pair<std::string, std::string>, symbol_t> symbols;
 
-		for(auto const& match : headerTypes)
+	// A version with no minor part, 11 rather than 11.0, has Minor set to -1.
+	auto version_string = [](CXVersion const& version){
+		return std::to_string(version.Major) + "." + std::to_string(std::max(version.Minor, 0));
+	};
+
+	CXIndex index = clang_createIndex(0, 0);
+	NSMutableArray* sdkNames = [NSMutableArray new];
+
+	for(size_t i = 0; i < sdkPaths.size(); ++i)
+	{
+		char const* sdkPath  = sdkPaths[i];
+		char const* platform = platforms[i];
+		[sdkNames addObject:[@(sdkPath) lastPathComponent]];
+
+		// The target triple matters as much as the SDK.
+		// Without it clang assumes the host, and Foundation on the iOS SDK imports a macOS only header and fails.
+		std::vector<char const*> cArgs = { "--sysroot", sdkPath, "-target", targets[i] };
+
+		// libclang looks for clang's own headers, stdarg.h and the like, relative to its own library.
+		// Homebrew's keg does not resolve that way, so the caller says where they are.
+		if(resourceDir)
 		{
-			if(isObjectiveC != match.objC || !std::regex_match(header, match.pattern))
-				continue;
-
-			std::string scope = cursorTypes[kind];
-			scope += match.scope.empty() && frameworkSegments ? framework_segment(header) : match.scope;
-
-			// A version with no minor part, 11 rather than 11.0, has Minor set to -1.
-			auto version_string = [](CXVersion const& version){
-				return std::to_string(version.Major) + "." + std::to_string(std::max(version.Minor, 0));
-			};
-
-			// Apple deprecated the whole of OpenGL in 10.14 and still ships it.
-			// Marking every one of its symbols would turn working OpenGL code red, so OpenGL is never marked deprecated.
-			bool const deprecated = available && available->Deprecated.Major > 0 && header.find("/OpenGL.framework/") == std::string::npos;
-
-			// Apple's API_TO_BE_DEPRECATED is a deprecation with no version, which clang reports as version 100000.
-			if(deprecated && available->Deprecated.Major == 100000)
-				scope = "invalid.deprecated.tba." + scope;
-			else if(deprecated)
-				scope = "invalid.deprecated." + version_string(available->Deprecated) + "." + scope;
-			else if(introducedVersions && available && (available->Introduced.Major > 10 || (available->Introduced.Major == 10 && available->Introduced.Minor > 7)))
-				scope += "." + version_string(available->Introduced);
-
-			if(suffix)
-				scope += suffix;
-
-			if(kind == CXCursor_FunctionDecl)
-				functions[scope].insert(symbol);
-			else if(kind == CXCursor_ObjCProtocolDecl)
-				protocols[scope].insert(symbol);
-			else
-				other[scope].insert(symbol);
-
-			break;
+			cArgs.push_back("-resource-dir");
+			cArgs.push_back(resourceDir);
 		}
-	});
 
-	NSString* comment = [NSString stringWithFormat:@"This file was generated with clang-C using %@", [@(sdkPath) lastPathComponent]];
+		// clang picks the language from the extension: includes.c is C and includes.mm is Objective-C++.
+		// A C++ standard is an error for a C file, so the C++ flags only go with the Objective-C run.
+		std::vector<char const*> args = cArgs;
+		if(isObjectiveC)
+		{
+			args.push_back("-std=c++1y");
+			args.push_back("-stdlib=libc++");
+		}
+
+		CXTranslationUnit tu = parse(index, sourcePath, args);
+		if(!tu)
+			return EX_DATAERR;
+
+		// The Objective-C grammar includes the C grammar, so every header the C source reaches belongs to the C run.
+		// The C source is parsed here only to learn which headers those are on this SDK.
+		std::set<std::string> cHeaders;
+		if(cSourcePath)
+		{
+			CXTranslationUnit cTu = parse(index, cSourcePath, cArgs);
+			if(!cTu)
+				return EX_DATAERR;
+			visit(cTu, platform, [&](std::string const&, CXCursorKind, CXPlatformAvailability const*, std::string const& header, CXCursor){
+				cHeaders.insert(header);
+			});
+			clang_disposeTranslationUnit(cTu);
+		}
+
+		visit(tu, platform, [&](std::string const& symbol, CXCursorKind kind, CXPlatformAvailability const* available, std::string const& header, CXCursor cursor){
+			// A header the C run owns is skipped here, or the catch-all would copy the whole C grammar into this one.
+			if(cHeaders.count(header))
+				return;
+
+			// A header can declare a symbol and mark it unavailable on the platform being parsed, UIWebView on visionOS say.
+			// That symbol does not exist on this platform, so it is not recorded as existing here, and its deprecation elsewhere stands.
+			if(available && available->Unavailable)
+				return;
+
+			for(auto const& match : headerTypes)
+			{
+				if(isObjectiveC != match.objC || !std::regex_match(header, match.pattern))
+					continue;
+
+				symbol_t& entry = symbols[{ cursorTypes[kind], symbol }];
+				entry.kind = kind;
+				if(entry.segment.empty())
+					entry.segment = match.scope.empty() && frameworkSegments ? framework_segment(header) : match.scope;
+				if(std::find(entry.platforms.begin(), entry.platforms.end(), platform) == entry.platforms.end())
+					entry.platforms.push_back(platform);
+
+				// Apple deprecated the whole of OpenGL in 10.14 and of OpenGL ES in iOS 12, and still ships both.
+				// Marking every one of their symbols would turn working OpenGL code red, so neither is ever marked deprecated.
+				bool const deprecated = available && available->Deprecated.Major > 0 && header.find("/OpenGL.framework/") == std::string::npos && header.find("/OpenGLES.framework/") == std::string::npos;
+
+				// Apple's API_TO_BE_DEPRECATED is a deprecation with no version, which clang reports as version 100000.
+				if(deprecated)
+					entry.deprecatedOn[platform] = available->Deprecated.Major == 100000 ? "tba" : version_string(available->Deprecated);
+
+				break;
+			}
+		});
+
+		clang_disposeTranslationUnit(tu);
+	}
+
+	// A symbol is deprecated when it is deprecated on every platform that has it, and current while any platform still wants it.
+	// A theme cannot know which platform a file targets, so the grammar does not pretend to.
+	// The version is macOS's when the symbol is on macOS, otherwise the first platform's in the order given, so one name has one scope.
+	for(auto const& pair : symbols)
+	{
+		std::string const& name = pair.first.second;
+		symbol_t const& entry = pair.second;
+		std::string scope = pair.first.first + entry.segment;
+
+		if(!entry.deprecatedOn.empty() && entry.deprecatedOn.size() == entry.platforms.size())
+		{
+			auto macos = entry.deprecatedOn.find("macos");
+			std::string const version = macos != entry.deprecatedOn.end() ? macos->second : entry.deprecatedOn.at(entry.platforms.front());
+			scope = deprecationVersions ? "invalid.deprecated." + version + "." + scope : "invalid.deprecated." + scope;
+		}
+
+		if(suffix)
+			scope += suffix;
+
+		if(entry.kind == CXCursor_FunctionDecl)
+			functions[scope].insert(name);
+		else if(entry.kind == CXCursor_ObjCProtocolDecl)
+			protocols[scope].insert(name);
+		else
+			other[scope].insert(name);
+	}
+
+	NSString* comment = [NSString stringWithFormat:@"This file was generated with clang-C using %@", [sdkNames componentsJoinedByString:@", "]];
 	if(grammarPath && !update_grammar(@(grammarPath), functions, protocols, other, comment, mergeRules))
 	{
 		fprintf(stderr, "%s: error updating %s\n", getprogname(), grammarPath);
