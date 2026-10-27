@@ -26,18 +26,31 @@ CFLAGS=-Os -Wall -std=c++1y -lc++ --sysroot $(SDK) -DCOMPILE_DATE=\"$(BUILD_DATE
 C_PATH=$(C_BUNDLE)/Syntaxes/Platform
 OBJC_PATH=$(OBJC_BUNDLE)/Syntaxes/Platform
 
+# The grammars are the union over every Apple platform, since a .m file does not say which one it targets.
+# Each entry is the SDK's name for xcrun, the platform's name in availability attributes, and the target triple to parse it as.
+# Every SDK ships inside Xcode, so none has to be installed separately.
+PLATFORMS=macosx:macos:arm64-apple-macos iphoneos:ios:arm64-apple-ios appletvos:tvos:arm64-apple-tvos watchos:watchos:arm64-apple-watchos xros:xros:arm64-apple-xros
+sdk_name=$(word 1,$(subst :, ,$(1)))
+sdk_platform=$(word 2,$(subst :, ,$(1)))
+sdk_target=$(word 3,$(subst :, ,$(1)))
+sdk_path=$(shell xcrun --sdk $(call sdk_name,$(1)) --show-sdk-path 2>/dev/null)
+SDKS=$(foreach p,$(PLATFORMS),--sdk='$(call sdk_path,$(p))' --platform=$(call sdk_platform,$(p)) --target=$(call sdk_target,$(p)))
+
 # The shape of the grammar, chosen by measurement, see README.md.
 # A scope segment per framework, one rule per group of scopes so highlighting stays fast,
-# and no introduced-in version on scopes, which halves the capture groups and is what makes the segments affordable.
-SHAPE=--framework-segments --merge-rules --without-introduced-versions
+# and deprecation without a version, since a version from one platform's numbering says nothing on another and each one costs a capture group.
+SHAPE=--framework-segments --merge-rules --without-deprecation-versions
 
 all: c objective-c
 
-c: generator bundles
-	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
+c: generator bundles sdks
+	./generator $(SDKS) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(C_PATH).tmLanguage' --text='$(C_PATH).md' --suffix='.c' includes.c
 
-objective-c: generator bundles
-	./generator --sdk=$(SDK) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
+objective-c: generator bundles sdks
+	./generator $(SDKS) --resource-dir='$(RESOURCE_DIR)' $(SHAPE) --grammar='$(OBJC_PATH).tmLanguage' --text='$(OBJC_PATH).md' --suffix='.objc' --cocoa --c-source=includes.c includes.mm
+
+sdks:
+	@$(foreach p,$(PLATFORMS),test -d '$(call sdk_path,$(p))' || { echo "No SDK for $(call sdk_name,$(p)): xcrun --sdk $(call sdk_name,$(p)) --show-sdk-path found nothing. Every platform SDK ships inside Xcode, so check xcode-select -p names the Xcode you mean" >&2; exit 1; };)
 
 generator: generator.mm Makefile llvm
 	@$(CC) $(CFLAGS) -o $@ $<
@@ -49,4 +62,4 @@ bundles:
 	@test -d '$(OBJC_BUNDLE)/Syntaxes' || { echo "objective-c.tmbundle not found at $(OBJC_BUNDLE). Pass OBJC_BUNDLE=path" >&2; exit 1; }
 	@test -d '$(C_BUNDLE)/Syntaxes' || { echo "c.tmbundle not found at $(C_BUNDLE). Clone it beside objective-c.tmbundle or pass C_BUNDLE=path" >&2; exit 1; }
 
-.PHONY: all c objective-c llvm bundles
+.PHONY: all c objective-c llvm bundles sdks
